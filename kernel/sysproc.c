@@ -106,32 +106,41 @@ sys_co_yield(void)
   argint(1, &value);
 
   struct proc *p = myproc();
-  struct proc *target;
+  struct proc *target = 0;
 
   if(pid <= 0 || pid == p->pid)
     return -1;
 
-  for(target = proc; target < &proc[NPROC]; target++) {
-    acquire(&target->lock);  
-    
-    if(target->pid == pid) {
-
-      if(target->killed || target->state == ZOMBIE || target->state == UNUSED){
-        release(&target->lock);
-        return -1;
-      }
-      
-      if (target->state == SLEEPING && target->chan == p){
-        target->trapframe->a0 = value;
-        wakeup(p);
-      }
-
-      sleep(target, &target->lock);
-      release(&target->lock);
-      return p->trapframe->a0;
+  for(struct proc *q = proc; q < &proc[NPROC]; q++) {
+    acquire(&q->lock);
+    if(q->pid == pid) {
+      target = q;
+      break;
     }
-    
-    release(&target->lock);
+    release(&q->lock);
   }
-  return -1;
+
+  if(target == 0)
+    return -1;
+
+  if(target->killed || target->state == UNUSED || target->state == ZOMBIE) {
+    release(&target->lock);
+    return -1;
+  }
+
+  // target is already sleeping, waiting for me
+  if(target->state == SLEEPING && target->chan == p) {
+    int ret = target->trapframe->a0;
+    target->trapframe->a0 = value;
+    target->state = RUNNABLE;
+    release(&target->lock);
+    return ret;
+  }
+
+  // target is not ready yet
+  p->trapframe->a0 = value;
+  sleep(target, &target->lock);
+  release(&target->lock);
+
+  return p->trapframe->a0;
 }
