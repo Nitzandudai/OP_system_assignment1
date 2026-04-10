@@ -102,8 +102,8 @@ uint64
 sys_co_yield(void)
 {
   int pid, value;
-  argint(0, (int*)pid);
-  argint(1, (int*)value);
+  argint(0, &pid);
+  argint(1, &value);
 
   struct proc *p = myproc();
   struct proc *target;
