@@ -130,11 +130,18 @@ sys_co_yield(void)
 
   // target is already sleeping, waiting for me
   if(target->state == SLEEPING && target->chan == p) {
-    int ret = target->trapframe->a0;
     target->trapframe->a0 = value;
-    target->state = RUNNABLE;
+
+    acquire(&p->lock);
+    p->state = SLEEPING;
+    p->chan = target;
+
+    target->state = RUNNING;
+    mycpu()->proc = target;
+
     release(&target->lock);
-    return ret;
+
+    swtch(&p->context, &target->context);
   }
 
   // target is not ready yet
