@@ -130,24 +130,44 @@ sys_co_yield(void)
 
   // target is already sleeping, waiting for me
   if(target->state == SLEEPING && target->chan == p) {
+    int intena;
+    if(!holding(&p->lock))
+      panic("v sched p->lock");
+    if(mycpu()->noff != 1)
+      panic("v sched locks");
+    if(p->state == RUNNING)
+      panic("v sched running");
+    if(intr_get())
+      panic("v sched interruptible");
+
+    intena = mycpu()->intena;
     target->trapframe->a0 = value;
 
     acquire(&p->lock);
     p->state = SLEEPING;
     p->chan = target;
+    release(&p->lock);
 
+    target->chan = 0;
     target->state = RUNNING;
     mycpu()->proc = target;
 
     release(&target->lock);
 
     swtch(&p->context, &target->context);
+    mycpu()->intena = intena;
+    return p->trapframe->a0;
   }
 
-  // target is not ready yet
+  // target is not ready yet; block until the other side is ready.
   p->trapframe->a0 = value;
-  sleep(target, &target->lock);
+  acquire(&p->lock);
+  p->state = SLEEPING;
+  p->chan = target;
   release(&target->lock);
+
+  mycpu()->proc = 0;
+  swtch(&p->context, &mycpu()->context);
 
   return p->trapframe->a0;
 }
