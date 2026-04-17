@@ -445,25 +445,26 @@ void
 scheduler(void)
 {
   struct proc *p;
-  struct proc *r;
   struct cpu *c = mycpu();
-
+  
   c->proc = 0;
   for(;;){
+    // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
 
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
+        // Switch to chosen process.  It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
 
-        r = c->proc;   // whoever actually returned to scheduler
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
         c->proc = 0;
-
-        release(&r->lock);
-        continue;
       }
       release(&p->lock);
     }
@@ -495,6 +496,35 @@ sched(void)
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
+}
+
+// Direct switch from `from` to `from`'s partner `to`, bypassing scheduler().
+// Caller must hold only from->lock; `to` must not be locked.
+// `from` must be SLEEPING; `to` must be SLEEPING in sched() with a valid context.
+void
+cohandoff(struct proc *from, struct proc *to)
+{
+  int intena;
+  struct cpu *c = mycpu();
+
+  if(!holding(&from->lock))
+    panic("cohandoff from lock");
+  if(holding(&to->lock))
+    panic("cohandoff to lock");
+  if(from->state == RUNNING)
+    panic("cohandoff from running");
+  if(to->state != SLEEPING)
+    panic("cohandoff to not sleeping");
+  if(intr_get())
+    panic("cohandoff interruptible");
+  if(c->noff != 1)
+    panic("cohandoff locks");
+
+  to->state = RUNNING;
+  c->proc = to;
+  intena = c->intena;
+  swtch(&from->context, &to->context);
+  c->intena = intena;
 }
 
 // Give up the CPU for one scheduling round.
@@ -679,31 +709,4 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
-}
-
-void
-cohandoff(struct proc *p, struct proc *target )
-{
-  int intena = mycpu()->intena;
-
-  if(!holding(&p->lock))
-    panic("cohandoff from lock");
-  if(!holding(&target->lock))
-    panic("cohandoff to lock");
-  if(p->state == RUNNING)
-    panic("cohandoff from running");
-  if(target->state != RUNNING)
-    panic("cohandoff to not running");
-  if(intr_get())
-    panic("cohandoff interruptible");
-
-  // leave only target->lock held across the switch.
-  release(&p->lock);
-  mycpu()->proc = target;
-
-  if(mycpu()->noff != 1)
-    panic("sched locks");
-    
-  swtch(&p->context, &target->context);
-  mycpu()->intena = intena;
 }

@@ -102,11 +102,12 @@ uint64
 sys_co_yield(void)
 {
   int pid, value;
-  argint(0, &pid);
-  argint(1, &value);
-
   struct proc *p = myproc();
   struct proc *target = 0;
+  struct proc *first, *second;
+
+  argint(0, &pid);
+  argint(1, &value);
 
   if(pid <= 0 || pid == p->pid)
     return -1;
@@ -128,28 +129,37 @@ sys_co_yield(void)
     return -1;
   }
 
-  // target is already sleeping, waiting for me
-  if(target->state == SLEEPING && target->chan == p) {
+  release(&target->lock);
+
+  first = p < target ? p : target;
+  second = p < target ? target : p;
+  acquire(&first->lock);
+  acquire(&second->lock);
+
+  if(target->killed || target->state == UNUSED || target->state == ZOMBIE) {
+    release(&second->lock);
+    release(&first->lock);
+    return -1;
+  }
+
+  if(target->state == SLEEPING && target->chan == (void *)p) {
     target->trapframe->a0 = value;
-
-    acquire(&p->lock);
+    p->chan = (void *)target;
     p->state = SLEEPING;
-    p->chan = target;
-
-    target->chan = 0;
-    target->state = RUNNING;
-
+    release(&target->lock);
     cohandoff(p, target);
-
     p->chan = 0;
-    release(&p->lock);
+    if(killed(p))
+      return -1;
     return p->trapframe->a0;
   }
 
-  // target is not ready yet - use the old working path
-  p->trapframe->a0 = value;
-  sleep(target, &target->lock);
+  p->chan = (void *)target;
+  p->state = SLEEPING;
   release(&target->lock);
-
+  sched();
+  p->chan = 0;
+  if(killed(p))
+    return -1;
   return p->trapframe->a0;
 }
