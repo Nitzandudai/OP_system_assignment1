@@ -498,35 +498,112 @@ sched(void)
   mycpu()->intena = intena;
 }
 
-// Direct switch from `from` to `from`'s partner `to`, bypassing scheduler().
-// Caller must hold only from->lock; `to` must not be locked.
-// `from` must be SLEEPING; `to` must be SLEEPING in sched() with a valid context.
+//======================================================================================================
 void
-cohandoff(struct proc *from, struct proc *to)
+co_sched(struct proc *target)
 {
   int intena;
-  struct cpu *c = mycpu();
+  struct proc *curr = myproc();
 
-  if(!holding(&from->lock))
-    panic("cohandoff from lock");
-  if(holding(&to->lock))
-    panic("cohandoff to lock");
-  if(from->state == RUNNING)
-    panic("cohandoff from running");
-  if(to->state != SLEEPING)
-    panic("cohandoff to not sleeping");
+  if(!holding(&curr->lock))
+    panic("co_sched not holding curr lock");
+  if(!holding(&target->lock))
+    panic("co_sched not holding target lock");
+
+  //we are holding both locks, so we can be sure that target won't be changed by other process until we switch to it.
+  if(mycpu()->noff != 2)
+    panic("co_sched locks");
   if(intr_get())
-    panic("cohandoff interruptible");
-  if(c->noff != 1)
-    panic("cohandoff locks");
+    panic("co_sched interruptible");
 
-  to->state = RUNNING;
-  c->proc = to;
-  intena = c->intena;
-  swtch(&from->context, &to->context);
-  c->intena = intena;
+  intena = mycpu()->intena;
+  target->state = RUNNING;
+  mycpu()->proc = target;
+  release(&curr->lock);
+  swtch(&curr->context, &target->context);
+  mycpu()->proc = curr;
+  mycpu()->intena = intena;
 }
 
+
+int
+co_yield(int pid, int value)
+{
+  struct proc *curr = myproc();
+  struct proc *target = 0;
+
+  if(pid <= 0 || pid == curr->pid || value < 0)
+    return -1;
+
+  acquire(&wait_lock);
+
+  for(struct proc *q = proc; q < &proc[NPROC]; q++) {
+    acquire(&q->lock);
+    if(q->pid == pid) {
+      target = q;
+      break;
+    }
+    release(&q->lock);
+  }
+
+  if(target == 0){
+    release(&wait_lock);
+    return -1;
+  }
+
+  if(target->killed || target->state == UNUSED || target->state == ZOMBIE) {
+    release(&target->lock);
+    release(&wait_lock);
+    return -1;
+  }
+
+  // we support only if target is runnable or waiting in co_yield. 
+  // target is already sleeping, waiting in co_yield
+  if(target->state == SLEEPING && target->chan == target) {
+    int val = target->trapframe->a0;
+    target->trapframe->a0 = value;
+    curr->trapframe->a0 = val;
+
+  // target is not ready yet;
+  }else if(target->state == RUNNABLE) {
+    curr->trapframe->a0 = value;
+  }else{
+    release(&target->lock);
+    release(&wait_lock);
+    return -1;
+  }
+
+  //anyway, set curr to sleep and switch to target
+  acquire(&curr->lock);
+  release(&wait_lock);
+
+  curr->chan = curr;
+  curr->state = SLEEPING;
+
+  if(target->state == SLEEPING && target->chan == target) {
+    co_sched(target);
+  }else{
+    release(&target->lock);
+    sched();
+  }
+
+  curr->chan = 0;
+
+  if (!holding(&curr->lock)){
+    panic("co_yield not holding curr->lock after set him to sleep");
+  }
+  release(&curr->lock);
+
+  acquire(&wait_lock);
+  int ret = curr->trapframe->a0;
+  if(!holding(&wait_lock)){
+    panic("co_yield not holding wait_lock");
+  }
+  release(&wait_lock);
+  return ret;
+}
+
+//===========================================================================================
 // Give up the CPU for one scheduling round.
 void
 yield(void)

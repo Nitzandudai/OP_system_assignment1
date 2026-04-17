@@ -102,64 +102,7 @@ uint64
 sys_co_yield(void)
 {
   int pid, value;
-  struct proc *p = myproc();
-  struct proc *target = 0;
-  struct proc *first, *second;
-
   argint(0, &pid);
   argint(1, &value);
-
-  if(pid <= 0 || pid == p->pid)
-    return -1;
-
-  for(struct proc *q = proc; q < &proc[NPROC]; q++) {
-    acquire(&q->lock);
-    if(q->pid == pid) {
-      target = q;
-      break;
-    }
-    release(&q->lock);
-  }
-
-  if(target == 0)
-    return -1;
-
-  if(target->killed || target->state == UNUSED || target->state == ZOMBIE) {
-    release(&target->lock);
-    return -1;
-  }
-
-  release(&target->lock);
-
-  first = p < target ? p : target;
-  second = p < target ? target : p;
-  acquire(&first->lock);
-  acquire(&second->lock);
-
-  if(target->killed || target->state == UNUSED || target->state == ZOMBIE) {
-    release(&second->lock);
-    release(&first->lock);
-    return -1;
-  }
-
-  if(target->state == SLEEPING && target->chan == (void *)p) {
-    target->trapframe->a0 = value;
-    p->chan = (void *)target;
-    p->state = SLEEPING;
-    release(&target->lock);
-    cohandoff(p, target);
-    p->chan = 0;
-    if(killed(p))
-      return -1;
-    return p->trapframe->a0;
-  }
-
-  p->chan = (void *)target;
-  p->state = SLEEPING;
-  release(&target->lock);
-  sched();
-  p->chan = 0;
-  if(killed(p))
-    return -1;
-  return p->trapframe->a0;
+  return co_yield(pid, value);
 }
