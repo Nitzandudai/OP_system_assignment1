@@ -227,6 +227,17 @@ sys_co_yield(void)
     return p->trapframe->a0;
   }
 
+  // Target is running (hasn't called co_yield yet) — sleep and wait.
+  if(target->state == RUNNING){
+    sleep(co_sleep_chan(p->pid), &wait_lock);
+    release(&wait_lock);
+
+    if(p->killed)
+      return -1;
+
+    return p->trapframe->a0;
+  }
+
   // Target is not in a valid state — return error.
   release(&wait_lock);
   return -1;
