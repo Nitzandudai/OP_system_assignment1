@@ -93,15 +93,9 @@ sys_uptime(void)
 }
 
 static void*
-co_sleep_chan(int pid)
+co_chan(int pid)
 {
-  return (void*)(((uint64)pid << 1));
-}
-
-static void*
-co_direct_chan(int pid)
-{
-  return (void*)((((uint64)pid << 1) | 1));
+  return (void*)((uint64)pid);
 }
 
 static void
@@ -151,54 +145,15 @@ sys_co_yield(void)
     return -1;
   }
 
-  /*
-   * Direct handoff implementation for co_yield.
-   *
-   * Design scope:
-   * - Works in the assignment's required single-CPU configuration.
-   * - Intended for cooperative ping-pong between two processes.
-   * - Does not attempt to fully handle all races among multiple unrelated
-   *   processes concurrently yielding to the same target.
-   *
-   * We distinguish between two waiting modes using two different channels:
-   *
-   * 1. co_sleep_chan(pid):
-   *    The process is blocked inside sleep(..., &wait_lock).
-   *    If we hand off directly to such a process, it resumes inside sleep(),
-   *    and sleep() itself will clear chan and release its own lock.
-   *
-   * 2. co_direct_chan(pid):
-   *    The process is suspended after a previous direct co_handoff().
-   *    If we hand off directly to such a process, it resumes after
-   *    co_handoff() inside sys_co_yield, so sys_co_yield must clear chan
-   *    and release p->lock explicitly.
-   *
-   * Locking policy:
-   * - wait_lock is used only to protect the rendezvous decision.
-   * - Before the direct switch, wait_lock is always released.
-   * - target->lock is kept held across the switch in both direct-handoff
-   *   cases. This avoids a lock-free window before swtch(), and ensures
-   *   that the resumed target continues with the lock state it expects:
-   *     * sleep-wait target releases it inside sleep()
-   *     * direct-wait target releases it after co_handoff() returns
-   *
-   * Deliberate limitation:
-   * This implementation is intentionally limited to the assignment's
-   * single-CPU cooperative scenario, without adding new fields to struct
-   * proc, new process states, or new global kernel data structures.
-   */
-
-  // Direct handoff: target is sleeping on the right channel, or runnable.
-  int sleeping_on_chan = (target->state == SLEEPING &&
-     (target->chan == co_sleep_chan(target->pid) || target->chan == co_direct_chan(target->pid)));
+  // Direct handoff: target is sleeping on co_chan (inside co_yield), or runnable.
+  int sleeping_on_chan = (target->state == SLEEPING && target->chan == co_chan(target->pid));
   int runnable = (target->state == RUNNABLE);
 
   if(sleeping_on_chan || runnable){
     acquire(&target->lock);
 
     // Re-check under target->lock.
-    sleeping_on_chan = (target->state == SLEEPING &&
-       (target->chan == co_sleep_chan(target->pid) || target->chan == co_direct_chan(target->pid)));
+    sleeping_on_chan = (target->state == SLEEPING && target->chan == co_chan(target->pid));
     runnable = (target->state == RUNNABLE);
 
     if(target->killed || (!sleeping_on_chan && !runnable)){
@@ -207,8 +162,8 @@ sys_co_yield(void)
       return -1;
     }
 
-    // Current process will wait for the opposite yield in direct-wait mode.
-    p->chan = co_direct_chan(p->pid);
+    // Current process will wait for the opposite yield.
+    p->chan = co_chan(p->pid);
     p->state = SLEEPING;
 
     // Deliver the value only if the target is already inside co_yield.
