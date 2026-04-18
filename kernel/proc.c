@@ -527,6 +527,72 @@ co_handoff(struct proc *from, struct proc *to)
   c->proc = from;
 }
 
+int
+co_yield(int target_pid, int value)
+{
+  struct proc *p = myproc();
+  struct proc *target = 0;
+  struct proc *pp;
+
+  if(target_pid <= 0 || target_pid == p->pid)
+    return -1;
+
+  acquire(&wait_lock);
+
+  for(pp = proc; pp < &proc[NPROC]; pp++){
+    if(pp->pid == target_pid && pp->state != UNUSED && pp->state != ZOMBIE){
+      target = pp;
+      break;
+    }
+  }
+
+  if(target == 0 || target->state == ZOMBIE || target->killed){
+    release(&wait_lock);
+    return -1;
+  }
+
+  void *target_chan = (void*)(uint64)target->pid;
+  int sleeping_on_chan = (target->state == SLEEPING && target->chan == target_chan);
+  int runnable = (target->state == RUNNABLE);
+
+  if(sleeping_on_chan || runnable){
+    acquire(&target->lock);
+
+    sleeping_on_chan = (target->state == SLEEPING && target->chan == target_chan);
+    runnable = (target->state == RUNNABLE);
+
+    if(target->killed || (!sleeping_on_chan && !runnable)){
+      release(&target->lock);
+      release(&wait_lock);
+      return -1;
+    }
+
+    p->chan = (void*)(uint64)p->pid;
+    p->state = SLEEPING;
+
+    if(sleeping_on_chan)
+      target->trapframe->a0 = value;
+
+    target->state = RUNNING;
+
+    release(&wait_lock);
+
+    co_handoff(p, target);
+
+    p->chan = 0;
+    if(holding(&p->lock))
+      release(&p->lock);
+
+    if(p->killed)
+      return -1;
+
+    return p->trapframe->a0;
+  }
+
+  release(&wait_lock);
+  return -1;
+}
+
 
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.

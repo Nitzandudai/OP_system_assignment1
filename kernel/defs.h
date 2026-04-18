@@ -190,3 +190,4 @@ void            virtio_disk_intr(void);
 
 // context switching
 void            co_handoff(struct proc*, struct proc*);
+int             co_yield(int, int);
