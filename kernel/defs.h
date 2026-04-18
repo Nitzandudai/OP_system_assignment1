@@ -98,8 +98,6 @@ struct proc*    myproc();
 void            procinit(void);
 void            scheduler(void) __attribute__((noreturn));
 void            sched(void);
-int             co_yield(int pid, int value);
-void            co_sched(struct proc *target);  
 void            sleep(void*, struct spinlock*);
 void            userinit(void);
 int             wait(uint64);
@@ -189,3 +187,6 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+// context switching
+void            co_handoff(struct proc*, struct proc*);
