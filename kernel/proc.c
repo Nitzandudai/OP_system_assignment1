@@ -514,34 +514,33 @@ yield(void)
   release(&p->lock);
 }
 
-
+//------------------------------------------task 3--------------------------------------------
 // Direct context switch from one cooperating process to another.
 // Locking policy is decided by sys_co_yield.
 void
-co_handoff(struct proc *from, struct proc *to)
+co_handoff(struct proc *curr, struct proc *target)
 {
   struct cpu *c = mycpu();
 
-  c->proc = to;
-  swtch(&from->context, &to->context);
-  c->proc = from;
+  c->proc = target;
+  swtch(&curr->context, &target->context);
+  c->proc = curr;
 }
 
 int
-co_yield(int target_pid, int value)
+co_yield(int pid, int value)
 {
-  struct proc *p = myproc();
+  struct proc *curr = myproc();
   struct proc *target = 0;
-  struct proc *pp;
 
-  if(target_pid <= 0 || target_pid == p->pid)
+  if(pid <= 0 || pid == curr->pid)
     return -1;
 
   acquire(&wait_lock);
 
-  for(pp = proc; pp < &proc[NPROC]; pp++){
-    if(pp->pid == target_pid && pp->state != UNUSED && pp->state != ZOMBIE){
-      target = pp;
+  for(struct proc *q = proc; q < &proc[NPROC]; q++) {
+    if(q->pid == pid) {
+      target = q;
       break;
     }
   }
@@ -567,8 +566,8 @@ co_yield(int target_pid, int value)
       return -1;
     }
 
-    p->chan = (void*)(uint64)p->pid;
-    p->state = SLEEPING;
+    curr->chan = (void*)(uint64)curr->pid;
+    curr->state = SLEEPING;
 
     if(sleeping_on_chan)
       target->trapframe->a0 = value;
@@ -577,22 +576,23 @@ co_yield(int target_pid, int value)
 
     release(&wait_lock);
 
-    co_handoff(p, target);
+    co_handoff(curr, target);
 
-    p->chan = 0;
-    if(holding(&p->lock))
-      release(&p->lock);
+    curr->chan = 0;
+    if(holding(&curr->lock))
+      release(&curr->lock);
 
-    if(p->killed)
+    if(curr->killed)
       return -1;
 
-    return p->trapframe->a0;
+    return curr->trapframe->a0;
   }
 
   release(&wait_lock);
   return -1;
 }
 
+//------------------------------------------------------------------------------------------------
 
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
