@@ -92,29 +92,6 @@ sys_uptime(void)
   return xticks;
 }
 
-static void*
-co_chan(int pid)
-{
-  return (void*)((uint64)pid);
-}
-
-static void
-co_resume_cleanup(struct proc *p)
-{
-  p->chan = 0;
-
-  // In the direct-handoff path, the yielding partner may resume us
-  // while our p->lock is still held across the switch.
-  // However, because this implementation mixes two rendezvous modes
-  // (sleep-based and direct-handoff based) without adding new fields to
-  // struct proc, we release p->lock here only if it is actually held.
-  // This keeps the code safe in the assignment's single-CPU setting and
-  // avoids mismatched release() panics.
-  if(holding(&p->lock))
-    release(&p->lock);
-}
-
-
 uint64
 sys_co_yield(void)
 {
@@ -146,14 +123,15 @@ sys_co_yield(void)
   }
 
   // Direct handoff: target is sleeping on co_chan (inside co_yield), or runnable.
-  int sleeping_on_chan = (target->state == SLEEPING && target->chan == co_chan(target->pid));
+  void *target_chan = (void*)(uint64)target->pid;
+  int sleeping_on_chan = (target->state == SLEEPING && target->chan == target_chan);
   int runnable = (target->state == RUNNABLE);
 
   if(sleeping_on_chan || runnable){
     acquire(&target->lock);
 
     // Re-check under target->lock.
-    sleeping_on_chan = (target->state == SLEEPING && target->chan == co_chan(target->pid));
+    sleeping_on_chan = (target->state == SLEEPING && target->chan == target_chan);
     runnable = (target->state == RUNNABLE);
 
     if(target->killed || (!sleeping_on_chan && !runnable)){
@@ -163,7 +141,7 @@ sys_co_yield(void)
     }
 
     // Current process will wait for the opposite yield.
-    p->chan = co_chan(p->pid);
+    p->chan = (void*)(uint64)p->pid;
     p->state = SLEEPING;
 
     // Deliver the value only if the target is already inside co_yield.
@@ -178,7 +156,9 @@ sys_co_yield(void)
 
     co_handoff(p, target);
 
-    co_resume_cleanup(p);
+    p->chan = 0;
+    if(holding(&p->lock))
+      release(&p->lock);
 
     if(p->killed)
       return -1;
