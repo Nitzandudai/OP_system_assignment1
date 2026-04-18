@@ -188,14 +188,20 @@ sys_co_yield(void)
    * proc, new process states, or new global kernel data structures.
    */
 
-  // Target is either sleeping inside sleep() or suspended after direct handoff.
-  if(target->state == SLEEPING && 
-     (target->chan == co_sleep_chan(target->pid) || target->chan == co_direct_chan(target->pid))){
+  // Direct handoff: target is sleeping on the right channel, or runnable.
+  int sleeping_on_chan = (target->state == SLEEPING &&
+     (target->chan == co_sleep_chan(target->pid) || target->chan == co_direct_chan(target->pid)));
+  int runnable = (target->state == RUNNABLE);
+
+  if(sleeping_on_chan || runnable){
     acquire(&target->lock);
 
     // Re-check under target->lock.
-    if(target->killed || target->state != SLEEPING ||
-       (target->chan != co_sleep_chan(target->pid) && target->chan != co_direct_chan(target->pid))){
+    sleeping_on_chan = (target->state == SLEEPING &&
+       (target->chan == co_sleep_chan(target->pid) || target->chan == co_direct_chan(target->pid)));
+    runnable = (target->state == RUNNABLE);
+
+    if(target->killed || (!sleeping_on_chan && !runnable)){
       release(&target->lock);
       release(&wait_lock);
       return -1;
@@ -209,15 +215,10 @@ sys_co_yield(void)
     target->trapframe->a0 = value;
     target->state = RUNNING;
 
-    // wait_lock must not be held across the direct switch.
     release(&wait_lock);
 
-    // target->lock remains held across the switch.
-    // If target is in co_sleep_chan, sleep() will release it.
-    // If target is in co_direct_chan, sys_co_yield will release it explicitly.
     co_handoff(p, target);
 
-    // We resume here when another process later yields back to us.
     co_resume_cleanup(p);
 
     if(p->killed)
@@ -226,12 +227,7 @@ sys_co_yield(void)
     return p->trapframe->a0;
   }
 
-  // Fallback: target is not ready yet.
-  sleep(co_sleep_chan(p->pid), &wait_lock);
+  // Target is not in a valid state — return error.
   release(&wait_lock);
-
-  if(p->killed)
-    return -1;
-
-  return p->trapframe->a0;
+  return -1;
 }
