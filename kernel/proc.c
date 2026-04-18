@@ -521,6 +521,7 @@ co_sched(struct proc *target)
   mycpu()->proc = target;
   release(&curr->lock);
   swtch(&curr->context, &target->context);
+  // If target is killed or yields, we return here and curr resumes execution
   mycpu()->proc = curr;
   mycpu()->intena = intena;
 }
@@ -558,19 +559,27 @@ co_yield(int pid, int value)
   }
 
   // we support only if target is runnable or waiting in co_yield. 
-  // target is already sleeping, waiting in co_yield
+  if(target->state != RUNNABLE && !(target->state == SLEEPING && target->chan == target)) {
+    release(&target->lock);
+    release(&wait_lock);
+    return -1;
+  }
+
+  if(target->state == SLEEPING && target->chan != target) {
+    release(&target->lock);
+    release(&wait_lock);
+    return -1;
+  }
+
+  // if target is waiting in co_yield, then we set his return value and set curr to sleep, and switch to target.
   if(target->state == SLEEPING && target->chan == target) {
     int val = target->trapframe->a0;
     target->trapframe->a0 = value;
     curr->trapframe->a0 = val;
 
   // target is not ready yet;
-  }else if(target->state == RUNNABLE) {
+  } else {
     curr->trapframe->a0 = value;
-  }else{
-    release(&target->lock);
-    release(&wait_lock);
-    return -1;
   }
 
   //anyway, set curr to sleep and switch to target
@@ -580,12 +589,7 @@ co_yield(int pid, int value)
   curr->chan = curr;
   curr->state = SLEEPING;
 
-  if(target->state == SLEEPING && target->chan == target) {
-    co_sched(target);
-  }else{
-    release(&target->lock);
-    sched();
-  }
+  co_sched(target);
 
   curr->chan = 0;
 
@@ -593,8 +597,8 @@ co_yield(int pid, int value)
     panic("co_yield not holding curr->lock after set him to sleep");
   }
   release(&curr->lock);
-
   acquire(&wait_lock);
+
   int ret = curr->trapframe->a0;
   if(!holding(&wait_lock)){
     panic("co_yield not holding wait_lock");
