@@ -211,8 +211,12 @@ sys_co_yield(void)
     p->chan = co_direct_chan(p->pid);
     p->state = SLEEPING;
 
-    // Deliver the value that becomes target's co_yield() return value.
-    target->trapframe->a0 = value;
+    // Deliver the value only if the target is already inside co_yield.
+    // A RUNNABLE target hasn't called co_yield yet — writing a0 would
+    // clobber its pending return value (e.g., fork's return value of 0).
+    if(sleeping_on_chan)
+      target->trapframe->a0 = value;
+
     target->state = RUNNING;
 
     release(&wait_lock);
@@ -220,17 +224,6 @@ sys_co_yield(void)
     co_handoff(p, target);
 
     co_resume_cleanup(p);
-
-    if(p->killed)
-      return -1;
-
-    return p->trapframe->a0;
-  }
-
-  // Target is running (hasn't called co_yield yet) — sleep and wait.
-  if(target->state == RUNNING){
-    sleep(co_sleep_chan(p->pid), &wait_lock);
-    release(&wait_lock);
 
     if(p->killed)
       return -1;
